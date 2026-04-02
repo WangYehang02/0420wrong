@@ -9,7 +9,5 @@ weight: 1.5
 residual_scale: 20.0
 sample_steps: 50
 
-use_adaptive_residual_scale: false
-use_multi_score_fusion: false
 use_virtual_neighbors: false
 use_score_smoothing: false

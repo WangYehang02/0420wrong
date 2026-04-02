@@ -56,17 +56,13 @@
 \alpha_i = \sigma\big(\kappa(d_i-b)\big),\qquad
 \tilde{\mathbf{r}}_i = \alpha_i\,\mathbf{r}^{\mathrm{loc}}_i + (1-\alpha_i)\,\mathbf{r}^{\mathrm{glob}}_i,
 \]
-其中 \(\sigma\) 为 logistic。可选**自适应幅度** \(\phi(d_i)\) 作用于 \(\tilde{\mathbf{r}}_i\)，再乘标量超参 \(\lambda\)（代码中 `residual_scale`）得 \(\mathbf{r}_i = \lambda\,\phi(d_i)\odot \tilde{\mathbf{r}}_i\)（关闭自适应时 \(\phi\equiv 1\)）。
+其中 \(\sigma\) 为 logistic。再乘标量超参 \(\lambda\)（代码中 `residual_scale`）得 \(\mathbf{r}_i = \lambda\,\tilde{\mathbf{r}}_i\)。
 
-### 4.2 多尺度残差（可选）
-
-在 \(\mathbf{r}^{\mathrm{glob}},\mathbf{r}^{\mathrm{loc}}\) 之外增加结构相关通道 \(\mathbf{r}^{\mathrm{str}}\)，经通道注意力 \(\mathrm{Attn}(\cdot)\) 融合为 \(\tilde{\mathbf{r}}_i\)（`compute_multi_scale_residuals` + `ResidualChannelAttention`）。
-
-### 4.3 虚拟邻居（可选）
+### 4.2 虚拟邻居（可选）
 
 在 \(\mathbf{H}\) 空间对高度节点按 KNN 追加边，再计算上述残差（`_add_virtual_knn_edges`）。
 
-### 4.4 拼接与标准化
+### 4.3 拼接与标准化
 
 \[
 \mathbf{z}_i = \big[\mathbf{h}_i \,\|\, \mathbf{r}_i\big] \in \mathbb{R}^{2d}.
@@ -132,19 +128,9 @@ q^{\mathrm{recon}}_i = \ell_{\mathrm{recon},i}(\mathbf{X},\hat{\mathbf{X}}).
 
 ---
 
-## 9. 多源异常分数与图平滑（可选）
+## 9. 异常分数与图平滑（可选）
 
-在 \(\mathbf{Z}_0=\mathbf{Z}\)（观测混合表征）上可预计算辅助标量：
-
-- **原型距离**：\(q^{\mathrm{proto}}_i=\|\mathbf{h}_i-\mathbf{p}\|_2\)。
-- **残差能量**：\(q^{\mathrm{res}}_i=\|\mathbf{r}_i\|_2\)。
-- **速度范数（能量）**：取 \(t\approx 1\)，\(q^{\mathrm{ene}}_i=\|\mathbf{v}^{\mathrm{proto}}_\theta(\mathbf{z}_{0,i},t,\mathbf{p})\|_2\)。
-
-各通道在节点上 min–max 归一化到 \([0,1]\) 后，以温度 Softmax 得权重 \(w_{i,k}\)，融合为
-\[
-s^{\mathrm{fuse}}_i = \sum_{k\in\mathcal{K}} w_{i,k}\,\tilde{q}^{(k)}_i,
-\]
-其中 \(\mathcal{K}\) 默认含 \(\{\mathrm{recon},\mathrm{ene},\mathrm{proto},\mathrm{res}\}\)（`use_multi_score_fusion`）。关闭融合时 \(s_i=q^{\mathrm{recon}}_i\)。
+对每个采样步数，由 Flow 积分得到 \(\hat{\mathbf{h}}\)，经 AE 解码得到重建误差作为节点异常分数 \(s_i=q^{\mathrm{recon}}_i\)（与训练一致的 `loss_func` 或大图上的属性 MSE）。
 
 可选**图上分数平滑**（邻居加权一阶平滑，`_smooth_scores_by_graph`）：
 \[

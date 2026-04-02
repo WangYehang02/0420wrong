@@ -8,7 +8,5 @@ proto_alpha: 0.01
 weight: 1.0
 residual_scale: 10.0
 sample_steps: 100
-use_adaptive_residual_scale: false
-use_multi_score_fusion: false
 use_virtual_neighbors: false
 use_score_smoothing: true

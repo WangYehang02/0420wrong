@@ -23,9 +23,9 @@
 | 路径 | 职责 |
 |------|------|
 | `main_train.py` | **主入口**：读 YAML、`CUDA_VISIBLE_DEVICES`、构造 `ResFlowGAD`、调用 `model(dataset_name)`、可选写 `result-file` JSON。 |
-| `res_flow_gad.py` | **核心类 `ResFlowGAD`**：数据加载、`forward` 全流程（AE → Flow → 评估）、大图分支、多种评分开关。 |
+| `res_flow_gad.py` | **核心类 `ResFlowGAD`**：数据加载、`forward` 全流程（AE → Flow → 评估）、大图分支、可选 NLL/能量/引导重建等评分开关。 |
 | `auto_encoder.py` | **GraphAE**：GCN 编码器 + 属性 / 结构解码（与 PyGOD 解码与损失衔接）。 |
-| `encoder.py` | **残差与门控**：`compute_dual_residuals_with_degree`、多尺度残差、`ResidualChannelAttention`、自适应 `residual_scale` 等。 |
+| `encoder.py` | **残差**：`compute_residuals`、`compute_dual_residuals_with_degree`（全局/局部残差与度数，供门控融合）。 |
 | `flow_matching_model.py` | **Flow Matching**：`MLPFlowMatching`、`FlowMatchingModel`、`FlowMatchingLoss`、`sample_flow_matching_free` 等。 |
 | `FMloss.py` | Flow Matching 训练用损失封装（与 `res_flow_gad` 内训练循环配合）。 |
 | `utils.py` | 工具函数（如温度 softmax 等）。 |
@@ -76,7 +76,7 @@
 
 - **单次实验**：`python main_train.py --config configs/<name>.yaml --device 0 --seed 42 --num_trial 1`  
   - `dataset` 在 YAML 的 `dataset` 字段；`--num_trial` 可覆盖 YAML。
-- **机制开关**：如 `use_multi_scale_residual`、`use_virtual_neighbors`、`flow_t_sampling`、`weight`、`proto_alpha` 等均来自 YAML，传入 `ResFlowGAD` 构造函数。
+- **机制开关**：如 `use_virtual_neighbors`、`use_score_smoothing`、`flow_t_sampling`、`weight`、`proto_alpha` 等均来自 YAML，传入 `ResFlowGAD` 构造函数。
 - **调参**：
   - 搜索空间与 **数据集固定锁** 在 `tuning_search_space.py`（避免无效模块进网格）。
   - `run_tune_refined.py` 负责并行、超时、`tmp` 配置与结果汇总。

@@ -47,7 +47,6 @@ def main():
     if ae_alpha_cfg == 0.0:
         ae_alpha_cfg = 0.9
 
-    # 优化版：多尺度残差、多评分融合（温度系数）、虚拟邻居、分数平滑等
     model = ResFlowGAD(
         hid_dim=cfg.get("hid_dim") if cfg.get("hid_dim") else None,
         ae_dropout=cfg["ae_dropout"],
@@ -61,10 +60,6 @@ def main():
         use_nll_score=cfg.get("use_nll_score", False),
         use_energy_score=cfg.get("use_energy_score", False),
         use_guided_recon=cfg.get("use_guided_recon", False),
-        use_multi_scale_residual=cfg.get("use_multi_scale_residual", True),
-        use_adaptive_residual_scale=cfg.get("use_adaptive_residual_scale", True),
-        use_multi_score_fusion=cfg.get("use_multi_score_fusion", True),
-        score_fusion_temperature=float(cfg.get("score_fusion_temperature", 1.0)),
         use_virtual_neighbors=cfg.get("use_virtual_neighbors", True),
         virtual_degree_threshold=int(cfg.get("virtual_degree_threshold", 5)),
         virtual_k=int(cfg.get("virtual_k", 5)),

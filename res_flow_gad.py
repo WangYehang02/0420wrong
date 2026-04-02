@@ -38,12 +38,7 @@ from load_custom_data import load_dgraphfin_data, load_dgraph_data
 from flow_matching_model import MLPFlowMatching, FlowMatchingModel, sample_flow_matching_free
 from FMloss import flow_matching_loss, conditional_flow_matching_loss
 
-from encoder import (
-    compute_dual_residuals_with_degree,
-    compute_multi_scale_residuals,
-    ResidualChannelAttention,
-    adaptive_residual_scale as adaptive_residual_scale_fn,
-)
+from encoder import compute_dual_residuals_with_degree
 
 
 def _smooth_scores_by_graph(
@@ -151,12 +146,6 @@ class ResFlowGAD(BaseTransform):
         use_guided_recon: bool = False,
         guidance_scale: float = 3.0,
         ode_steps: int = 20,
-        # 多尺度残差与自适应缩放
-        use_multi_scale_residual: bool = True,
-        use_adaptive_residual_scale: bool = True,
-        # 多评分融合（温度系数 softmax 加权）
-        use_multi_score_fusion: bool = True,
-        score_fusion_temperature: float = 1.0,
         # 稀疏图：虚拟邻居
         use_virtual_neighbors: bool = True,
         virtual_degree_threshold: int = 5,
@@ -194,10 +183,6 @@ class ResFlowGAD(BaseTransform):
         self.use_guided_recon = use_guided_recon
         self.guidance_scale = guidance_scale
         self.ode_steps = ode_steps
-        self.use_multi_scale_residual = use_multi_scale_residual
-        self.use_adaptive_residual_scale = use_adaptive_residual_scale
-        self.use_multi_score_fusion = use_multi_score_fusion
-        self.score_fusion_temperature = score_fusion_temperature
         self.use_virtual_neighbors = use_virtual_neighbors
         self.virtual_degree_threshold = virtual_degree_threshold
         self.virtual_k = virtual_k
@@ -218,7 +203,6 @@ class ResFlowGAD(BaseTransform):
         self.dm = None  # type: Optional[FlowMatchingModel]
         self.dm_proto = None  # type: Optional[FlowMatchingModel]
         self.proto = None  # type: Optional[torch.Tensor]
-        self.residual_attention = None  # type: Optional[ResidualChannelAttention]
 
         self.cos = nn.CosineSimilarity(dim=1, eps=1e-6)
         # v2 默认扫 500 个 time points；Weibo 先用更少点数提速，指标通常不会明显下降
@@ -642,7 +626,7 @@ class ResFlowGAD(BaseTransform):
 
     def _build_z(self, x: torch.Tensor, edge_index: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        构建混合 Latent Z：多尺度残差（可选）+ 自适应门控/注意力融合 + 自适应缩放（可选）。
+        构建混合 Latent Z：双重残差（全局/局部）经可学习门控融合后乘以 residual_scale。
         返回：z [N, 2*hid_dim], h [N, hid_dim], r_final [N, hid_dim]
         """
         h = self.ae.encode(x, edge_index)
@@ -655,21 +639,12 @@ class ResFlowGAD(BaseTransform):
                 dev,
             )
 
-        if getattr(self, "use_multi_scale_residual", False) and self.residual_attention is not None:
-            r_global, r_local, r_structural, deg = compute_multi_scale_residuals(h, edge_index)
-            r_fused = self.residual_attention([r_global, r_local, r_structural])
-        else:
-            r_global, r_local, deg = compute_dual_residuals_with_degree(h, edge_index)
-            bias = self.gate_module.bias.to(dev)
-            sharpness = self.gate_module.sharpness.to(dev)
-            alpha = torch.sigmoid((deg - bias) * sharpness)
-            r_fused = alpha * r_local + (1.0 - alpha) * r_global
-
-        if getattr(self, "use_adaptive_residual_scale", False):
-            scale = adaptive_residual_scale_fn(deg, base_scale=self.residual_scale)
-            r_final = r_fused * scale
-        else:
-            r_final = r_fused * self.residual_scale
+        r_global, r_local, deg = compute_dual_residuals_with_degree(h, edge_index)
+        bias = self.gate_module.bias.to(dev)
+        sharpness = self.gate_module.sharpness.to(dev)
+        alpha = torch.sigmoid((deg - bias) * sharpness)
+        r_fused = alpha * r_local + (1.0 - alpha) * r_global
+        r_final = r_fused * self.residual_scale
         z = torch.cat([h, r_final], dim=1)
         return z, h, r_final
 
@@ -699,8 +674,6 @@ class ResFlowGAD(BaseTransform):
         ae_dict = torch.load(os.path.join(ae_path, f"{ae_ckpt}.pt"))
         self.ae.load_state_dict(ae_dict["state_dict"])
         self.gate_module = self.gate_module.to(next(self.ae.parameters()).device)
-        if self.use_multi_scale_residual:
-            self.residual_attention = ResidualChannelAttention(3, self.hid_dim).to(next(self.ae.parameters()).device)
 
         # 2) trials
         num_trial = getattr(self, "num_trial", 3)
@@ -719,8 +692,6 @@ class ResFlowGAD(BaseTransform):
             self.dm.load_state_dict(dm_dict["state_dict"])
             if "gate_state" in dm_dict:
                 self.gate_module.load_state_dict(dm_dict["gate_state"])
-            if self.residual_attention is not None and "residual_attention" in dm_dict:
-                self.residual_attention.load_state_dict(dm_dict["residual_attention"])
             self.proto = dm_dict["prototype"]  # [hid_dim]
 
             # proto model: cond_dim = hid_dim（只条件在 h 的原型上）
@@ -1159,8 +1130,6 @@ class ResFlowGAD(BaseTransform):
 
         fm_lr = self.lr * 0.5
         params = list(self.dm.parameters()) + list(self.gate_module.parameters())
-        if self.residual_attention is not None:
-            params = params + list(self.residual_attention.parameters())
         optimizer = torch.optim.Adam(params, lr=fm_lr, weight_decay=self.wd)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.5)
 
@@ -1242,8 +1211,6 @@ class ResFlowGAD(BaseTransform):
                     "prototype": proto_h,
                     "gate_state": self.gate_module.state_dict(),
                 }
-                if self.residual_attention is not None:
-                    save_dict["residual_attention"] = self.residual_attention.state_dict()
                 torch.save(save_dict, os.path.join(ae_path, "dm_self.pt"))
             else:
                 patience += 1
@@ -1261,8 +1228,6 @@ class ResFlowGAD(BaseTransform):
                 "prototype": proto_fallback,
                 "gate_state": self.gate_module.state_dict(),
             }
-            if self.residual_attention is not None:
-                save_dict["residual_attention"] = self.residual_attention.state_dict()
             torch.save(save_dict, dm_path)
             if self.verbose:
                 print("FM-free: fallback save (no valid loss epoch)")
@@ -1340,26 +1305,14 @@ class ResFlowGAD(BaseTransform):
         edge_index = data.edge_index.cuda()
         y = data.y.bool()
 
-        # 构造 z，并预计算 energy / proto / residual 分数（用于多评分融合）
-        z0, h, r_final = self._build_z(x, edge_index)
+        # 噪声维度与训练时 z 一致
+        z0, _, _ = self._build_z(x, edge_index)
         z0 = self._normalize_clip(z0)
         noise = torch.randn_like(z0)
 
         proto_context = self.proto.unsqueeze(0) if self.proto.dim() == 1 else self.proto.mean(dim=0, keepdim=True)
         if proto_context.dim() == 1:
             proto_context = proto_context.unsqueeze(0)
-        proto_expanded = proto_context.expand(z0.size(0), -1)
-        score_proto = torch.norm(h - proto_expanded, p=2, dim=1)
-        score_residual = torch.norm(r_final, p=2, dim=1)
-        t_99 = torch.full((z0.size(0),), 0.99, device=z0.device, dtype=z0.dtype)
-        v_99 = proto_net(z0, t_99, context=proto_expanded, proto_alpha=self.proto_alpha)
-        score_energy = torch.norm(v_99, p=2, dim=1)
-
-        def _normalize_score(s: torch.Tensor) -> torch.Tensor:
-            smin, smax = s.min(), s.max()
-            if smax - smin < 1e-8:
-                return torch.zeros_like(s, device=s.device)
-            return (s - smin) / (smax - smin)
 
         auc_list, ap_list, rec_list, auprc_list, f1_list = [], [], [], [], []
         score_list = []
@@ -1388,16 +1341,7 @@ class ResFlowGAD(BaseTransform):
                 x_, s_ = self.ae.decode(h_hat, edge_index)
                 score_recon = self.ae.loss_func(x, x_, s, s_, self.ae_alpha)
 
-            if getattr(self, "use_multi_score_fusion", False):
-                sr = _normalize_score(score_recon)
-                se = _normalize_score(score_energy)
-                sp = _normalize_score(score_proto)
-                sres = _normalize_score(score_residual)
-                stacked = torch.stack([sr, se, sp, sres], dim=1)
-                w = softmax_with_temperature(stacked, t=self.score_fusion_temperature, axis=1)
-                score = (w * stacked).sum(dim=1)
-            else:
-                score = score_recon
+            score = score_recon
 
             if getattr(self, "use_score_smoothing", False) and edge_index.numel() > 0:
                 score = _smooth_scores_by_graph(score, edge_index, self.score_smoothing_alpha, score.device)
@@ -1443,16 +1387,6 @@ class ResFlowGAD(BaseTransform):
                     )
                 )
 
-        best_idx = int(np.argmax(auc_list))
-        if getattr(self, "ensemble_score", False):
-            return (
-                float(np.max(auc_list)),
-                float(np.max(ap_list)),
-                float(np.max(rec_list)),
-                float(np.max(auprc_list)),
-                float(np.max(f1_list)),
-                score_list[best_idx],
-            )
         best_idx = int(np.argmax(auc_list))
         if getattr(self, "ensemble_score", False):
             return (

@@ -50,17 +50,11 @@ def _build_variants() -> dict:
     # Full 统一打开关键模块，作为消融基线
     return {
         "Full_Model": {
-            "use_multi_scale_residual": True,
-            "use_adaptive_residual_scale": True,
             "use_virtual_neighbors": True,
-            "use_multi_score_fusion": True,
             "use_score_smoothing": True,
             "flow_t_sampling": "logit_normal",
         },
-        "w_o_multi_scale_residual": {"use_multi_scale_residual": False},
-        "w_o_adaptive_scale": {"use_adaptive_residual_scale": False},
         "w_o_virtual_neighbors": {"use_virtual_neighbors": False},
-        "w_o_multi_score_fusion": {"use_multi_score_fusion": False},
         "w_o_score_smoothing": {"use_score_smoothing": False},
         "w_o_logit_normal_sampling": {"flow_t_sampling": "uniform"},
         "w_o_proto_guidance": {"weight": 0.0},

@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 
 
 def compute_residuals(h: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
@@ -64,77 +63,3 @@ def compute_dual_residuals_with_degree(h: torch.Tensor, edge_index: torch.Tensor
     r_local = h - neigh_mean
 
     return r_global, r_local, deg_val.unsqueeze(1)
-
-
-def compute_multi_scale_residuals(h: torch.Tensor, edge_index: torch.Tensor):
-    """
-    多尺度残差：全局、局部、结构（度数异常）。
-    r_global: 节点与全图均值的差异（属性/分布异常）
-    r_local: 节点与邻居均值的差异（局部属性异常）
-    r_structural: 度数异常经 log1p + 全图标准化后与 r_global/r_local 量级对齐，再扩展到 [N,D]
-    返回: r_global [N,D], r_local [N,D], r_structural [N,D], deg [N,1]
-    """
-    if h.dim() != 2 or edge_index.dim() != 2 or edge_index.size(0) != 2:
-        raise ValueError("h [N,D], edge_index [2,E]")
-    src, dst = edge_index[0], edge_index[1]
-    n, d = h.size(0), h.size(1)
-
-    global_mean = torch.mean(h, dim=0, keepdim=True)
-    r_global = h - global_mean
-
-    neigh_sum = torch.zeros((n, d), device=h.device, dtype=h.dtype)
-    neigh_sum.index_add_(0, dst, h[src])
-    deg_val = torch.zeros((n,), device=h.device, dtype=h.dtype)
-    deg_val.index_add_(0, dst, torch.ones_like(dst, dtype=h.dtype))
-    deg_clamped = deg_val.clamp_min(1.0).unsqueeze(1)
-    neigh_mean = neigh_sum / deg_clamped
-    r_local = h - neigh_mean
-
-    # 邻居度数均值：mean(deg_neighbors) for each node
-    deg_src = deg_val[src]
-    neigh_deg_sum = torch.zeros((n,), device=h.device, dtype=h.dtype)
-    neigh_deg_sum.index_add_(0, dst, deg_src)
-    neigh_deg_mean = (neigh_deg_sum / deg_clamped.squeeze(1)).unsqueeze(1)
-    deg_expanded = deg_val.unsqueeze(1)
-    raw_diff = (deg_expanded - neigh_deg_mean).abs()
-    smoothed_diff = torch.log1p(raw_diff)
-    smoothed_diff = (smoothed_diff - smoothed_diff.mean()) / (smoothed_diff.std() + 1e-6)
-    r_structural = smoothed_diff.expand(-1, d)
-
-    return r_global, r_local, r_structural, deg_val.unsqueeze(1)
-
-
-class ResidualChannelAttention(nn.Module):
-    """学习多通道残差的融合权重（软注意力）。"""
-    def __init__(self, num_channels: int = 3, dim: int = 64):
-        super().__init__()
-        self.num_channels = num_channels
-        self.w = nn.Sequential(
-            nn.Linear(dim * num_channels, dim * 2),
-            nn.ReLU(inplace=True),
-            nn.Linear(dim * 2, num_channels),
-            nn.Softmax(dim=1),
-        )
-
-    def forward(self, residuals: list) -> torch.Tensor:
-        """
-        residuals: list of [N, D] tensors, length num_channels
-        返回: [N, D] 加权和
-        """
-        cat = torch.cat(residuals, dim=1)
-        alpha = self.w(cat)
-        out = sum(alpha[:, i : i + 1] * residuals[i] for i in range(len(residuals)))
-        return out
-
-
-def adaptive_residual_scale(deg: torch.Tensor, base_scale: float = 10.0, low_deg: float = 2.0, high_deg: float = 10.0) -> torch.Tensor:
-    """
-    基于节点度的自适应残差缩放：低度节点用较小 scale，高度节点用较大 scale。
-    deg: [N, 1]
-    返回: [N, 1] scale 因子
-    """
-    d = deg.clamp(min=1e-6)
-    log_deg = torch.log1p(d)
-    low, high = torch.log1p(torch.tensor([low_deg, high_deg], device=deg.device, dtype=deg.dtype))
-    t = (log_deg - low) / (high - low + 1e-8).clamp(0.0, 1.0)
-    return base_scale * (0.5 + t)
