@@ -41,6 +41,12 @@ from FMloss import flow_matching_loss, conditional_flow_matching_loss
 from encoder import compute_dual_residuals_with_degree
 
 
+def _auc_flip_enabled() -> bool:
+    """默认：AUC<0.5 时对分数做方向翻转。设环境变量 FMGAD_NO_AUC_FLIP=1 可关闭（用于诊断原始排序方向）。"""
+    v = os.environ.get("FMGAD_NO_AUC_FLIP", "").strip().lower()
+    return v not in ("1", "true", "yes")
+
+
 def _smooth_scores_by_graph(
     score: torch.Tensor, edge_index: torch.Tensor, alpha: float, device: torch.device
 ) -> torch.Tensor:
@@ -733,7 +739,7 @@ class ResFlowGAD(BaseTransform):
             y_true = data.y
 
             pyg_auc = eval_roc_auc(y_true, mean_scores)
-            if pyg_auc < 0.5:
+            if _auc_flip_enabled() and pyg_auc < 0.5:
                 smin, smax = mean_scores.min().item(), mean_scores.max().item()
                 if smax - smin > 1e-8:
                     mean_scores = 1.0 - (mean_scores - smin) / (smax - smin)
@@ -1352,7 +1358,7 @@ class ResFlowGAD(BaseTransform):
                 scores_cpu = torch.nan_to_num(scores_cpu, nan=0.0, posinf=0.0, neginf=0.0)
             pyg_auc = eval_roc_auc(y, scores_cpu)
             # AUC < 0.5 时方向反了，用 1-x 取反（先归一化到 [0,1] 再 1-x）
-            if pyg_auc < 0.5:
+            if _auc_flip_enabled() and pyg_auc < 0.5:
                 smin, smax = score.min(), score.max()
                 if smax - smin > 1e-8:
                     score = 1.0 - (score - smin) / (smax - smin)

@@ -1,0 +1,18 @@
+# 与各数据集AUC第一配置.md · reddit 均值第一 fae2d0e25f4c 一致
+dataset: reddit
+exp_tag: repro25_reddit_meanrank1_fae2d0e25f4c
+ae_alpha: 1.0
+ae_dropout: 0.3
+ae_lr: 0.003
+flow_t_sampling: uniform
+hid_dim: null
+proto_alpha: 0.005
+residual_scale: 10.0
+sample_steps: 150
+use_adaptive_residual_scale: false
+use_multi_scale_residual: false
+use_multi_score_fusion: false
+use_score_smoothing: true
+use_virtual_neighbors: true
+weight: 0.0
+num_trial: 1
