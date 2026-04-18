@@ -72,6 +72,7 @@ def main():
         ensemble_score=cfg.get("ensemble_score", True),
         num_trial=args.num_trial if args.num_trial is not None else int(cfg.get("num_trial", 3)),
         exp_tag=cfg.get("exp_tag", None),
+        flip_score=cfg.get("flip_score", False),
     )
 
     print("Running FMGADself on dataset:", dset, "num_trial:", model.num_trial, flush=True)

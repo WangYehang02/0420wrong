@@ -16,3 +16,5 @@ use_score_smoothing: true
 use_virtual_neighbors: true
 weight: 0.0
 num_trial: 1
+# 拓扑先验：稠密团伙型异常，重建分数与“异常=高分”约定相反时需翻转
+flip_score: true

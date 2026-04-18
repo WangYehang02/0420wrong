@@ -16,3 +16,4 @@ use_score_smoothing: true
 use_virtual_neighbors: true
 weight: 0.0
 num_trial: 1
+flip_score: false

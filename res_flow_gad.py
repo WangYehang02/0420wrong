@@ -41,42 +41,6 @@ from FMloss import flow_matching_loss, conditional_flow_matching_loss
 from encoder import compute_dual_residuals_with_degree
 
 
-def _structural_anchor_polarity_calibration(
-    score: torch.Tensor, x: torch.Tensor, edge_index: torch.Tensor
-) -> torch.Tensor:
-    """
-    基于结构锚点的无监督极性校准：局部特征散度 (Local Feature Divergence) 与模型分数的皮尔逊相关。
-
-    锚点得分 = ||x_i - mean(x_neighbors)||_2；与 score 算 Pearson 相关。
-    若 corr < 0，认为模型对高散度节点打了低分（极性反转），则翻转 score。
-    不使用标签。边用入边方向聚合邻居（与图平滑一致）。
-    """
-    with torch.no_grad():
-        if edge_index.numel() == 0:
-            return score
-        src, dst = edge_index[0], edge_index[1]
-        n = x.size(0)
-        dtype = x.dtype
-        device = x.device
-        deg = torch.zeros(n, device=device, dtype=dtype)
-        deg.index_add_(0, dst, torch.ones(edge_index.size(1), device=device, dtype=dtype))
-        neigh_sum = torch.zeros_like(x)
-        neigh_sum.index_add_(0, dst, x[src])
-        neigh_mean = neigh_sum / deg.clamp(min=1.0).unsqueeze(-1)
-        anchor_score = torch.norm(x - neigh_mean, p=2, dim=1)
-        vx = score - torch.mean(score)
-        vy = anchor_score - torch.mean(anchor_score)
-        denom = torch.sqrt(torch.sum(vx**2)) * torch.sqrt(torch.sum(vy**2)) + 1e-8
-        corr = torch.sum(vx * vy) / denom
-        if corr < 0:
-            smin, smax = score.min(), score.max()
-            if smax - smin > 1e-8:
-                score = 1.0 - (score - smin) / (smax - smin)
-            else:
-                score = -score
-    return score
-
-
 def _smooth_scores_by_graph(
     score: torch.Tensor, edge_index: torch.Tensor, alpha: float, device: torch.device
 ) -> torch.Tensor:
@@ -199,6 +163,7 @@ class ResFlowGAD(BaseTransform):
         ensemble_score: bool = True,
         num_trial: int = 3,
         exp_tag: Optional[str] = None,
+        flip_score: bool = False,
     ):
         self.name = name
         self.num_trial = num_trial
@@ -230,6 +195,7 @@ class ResFlowGAD(BaseTransform):
         self.flow_t_sampling = flow_t_sampling
         self.ensemble_score = ensemble_score
         self.exp_tag = exp_tag
+        self.flip_score = flip_score
 
         self.ae_dropout = ae_dropout
         self.ae_lr = ae_lr
@@ -766,12 +732,7 @@ class ResFlowGAD(BaseTransform):
             if torch.isnan(mean_scores).any() or torch.isinf(mean_scores).any():
                 mean_scores = torch.nan_to_num(mean_scores, nan=0.0, posinf=0.0, neginf=0.0)
 
-            x_cpu = data.x.to(dtype=torch.float32, device=mean_scores.device)
-            ei = data.edge_index.to(device=mean_scores.device)
-            mean_scores = _structural_anchor_polarity_calibration(mean_scores, x_cpu, ei)
-            if torch.isnan(mean_scores).any() or torch.isinf(mean_scores).any():
-                mean_scores = torch.nan_to_num(mean_scores, nan=0.0, posinf=0.0, neginf=0.0)
-
+            # flip_score 仅在 sample() 中应用一次；_ensemble_scores 已是校准后的分数，此处切勿再次翻转
             y_true = data.y
 
             pyg_auc = eval_roc_auc(y_true, mean_scores)
@@ -1379,8 +1340,13 @@ class ResFlowGAD(BaseTransform):
             if getattr(self, "use_score_smoothing", False) and edge_index.numel() > 0:
                 score = _smooth_scores_by_graph(score, edge_index, self.score_smoothing_alpha, score.device)
 
-            # === 基于结构锚点的无监督极性校准 (Structural Anchor / Local Feature Divergence) ===
-            score = _structural_anchor_polarity_calibration(score, x, edge_index)
+            # === 基于数据集拓扑先验的极性校准（配置 flip_score，不依赖标签）===
+            if getattr(self, "flip_score", False):
+                smin, smax = score.min(), score.max()
+                if smax - smin > 1e-8:
+                    score = 1.0 - (score - smin) / (smax - smin)
+                else:
+                    score = -score
 
             scores_cpu = score.detach().cpu()
             # 兜底：NaN/Inf 会破坏 sklearn 评估，替换为 0

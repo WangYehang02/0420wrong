@@ -1,6 +1,6 @@
-# Disney · 稳健主配置 disney_best_fmgad_refined（多 seed 推荐）
+# Disney 默认配置（与 disney_best 同先验；run_best_eval 通常使用 disney_best.yaml）
 dataset: disney
-exp_tag: disney_best_refined_multiseed
+exp_tag: disney_default
 ae_alpha: 0.55
 ae_dropout: 0.35
 ae_lr: 0.025
@@ -16,5 +16,4 @@ use_score_smoothing: true
 use_virtual_neighbors: false
 weight: 1.75
 num_trial: 1
-# 伪装型异常：稠密同质、重构误差偏低，需与 reddit/enron/books 同类拓扑先验
 flip_score: true
