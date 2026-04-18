@@ -1,13 +1,18 @@
-# FMGAD 调参报告最优参数 (weibo AUC 0.9422)
+# Weibo · manifest 均值第一 b6b807de9a1d（主配置）
 dataset: weibo
-ae_dropout: 0.2
-ae_lr: 0.01
+exp_tag: repro25_weibo_meanrank1_b6b807de9a1d
 ae_alpha: 1.0
-hid_dim:
+ae_dropout: 0.1
+ae_lr: 0.005
+flow_t_sampling: uniform
+hid_dim: null
 proto_alpha: 0.001
-weight: 1.5
-residual_scale: 10.0
-sample_steps: 100
-
-use_virtual_neighbors: false
+residual_scale: 20.0
+sample_steps: 50
+use_adaptive_residual_scale: false
+use_multi_scale_residual: false
+use_multi_score_fusion: false
 use_score_smoothing: true
+use_virtual_neighbors: true
+weight: 0.0
+num_trial: 1

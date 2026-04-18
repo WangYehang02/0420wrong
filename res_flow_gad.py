@@ -41,10 +41,40 @@ from FMloss import flow_matching_loss, conditional_flow_matching_loss
 from encoder import compute_dual_residuals_with_degree
 
 
-def _auc_flip_enabled() -> bool:
-    """默认：AUC<0.5 时对分数做方向翻转。设环境变量 FMGAD_NO_AUC_FLIP=1 可关闭（用于诊断原始排序方向）。"""
-    v = os.environ.get("FMGAD_NO_AUC_FLIP", "").strip().lower()
-    return v not in ("1", "true", "yes")
+def _structural_anchor_polarity_calibration(
+    score: torch.Tensor, x: torch.Tensor, edge_index: torch.Tensor
+) -> torch.Tensor:
+    """
+    基于结构锚点的无监督极性校准：局部特征散度 (Local Feature Divergence) 与模型分数的皮尔逊相关。
+
+    锚点得分 = ||x_i - mean(x_neighbors)||_2；与 score 算 Pearson 相关。
+    若 corr < 0，认为模型对高散度节点打了低分（极性反转），则翻转 score。
+    不使用标签。边用入边方向聚合邻居（与图平滑一致）。
+    """
+    with torch.no_grad():
+        if edge_index.numel() == 0:
+            return score
+        src, dst = edge_index[0], edge_index[1]
+        n = x.size(0)
+        dtype = x.dtype
+        device = x.device
+        deg = torch.zeros(n, device=device, dtype=dtype)
+        deg.index_add_(0, dst, torch.ones(edge_index.size(1), device=device, dtype=dtype))
+        neigh_sum = torch.zeros_like(x)
+        neigh_sum.index_add_(0, dst, x[src])
+        neigh_mean = neigh_sum / deg.clamp(min=1.0).unsqueeze(-1)
+        anchor_score = torch.norm(x - neigh_mean, p=2, dim=1)
+        vx = score - torch.mean(score)
+        vy = anchor_score - torch.mean(anchor_score)
+        denom = torch.sqrt(torch.sum(vx**2)) * torch.sqrt(torch.sum(vy**2)) + 1e-8
+        corr = torch.sum(vx * vy) / denom
+        if corr < 0:
+            smin, smax = score.min(), score.max()
+            if smax - smin > 1e-8:
+                score = 1.0 - (score - smin) / (smax - smin)
+            else:
+                score = -score
+    return score
 
 
 def _smooth_scores_by_graph(
@@ -736,18 +766,15 @@ class ResFlowGAD(BaseTransform):
             if torch.isnan(mean_scores).any() or torch.isinf(mean_scores).any():
                 mean_scores = torch.nan_to_num(mean_scores, nan=0.0, posinf=0.0, neginf=0.0)
 
+            x_cpu = data.x.to(dtype=torch.float32, device=mean_scores.device)
+            ei = data.edge_index.to(device=mean_scores.device)
+            mean_scores = _structural_anchor_polarity_calibration(mean_scores, x_cpu, ei)
+            if torch.isnan(mean_scores).any() or torch.isinf(mean_scores).any():
+                mean_scores = torch.nan_to_num(mean_scores, nan=0.0, posinf=0.0, neginf=0.0)
+
             y_true = data.y
 
             pyg_auc = eval_roc_auc(y_true, mean_scores)
-            if _auc_flip_enabled() and pyg_auc < 0.5:
-                smin, smax = mean_scores.min().item(), mean_scores.max().item()
-                if smax - smin > 1e-8:
-                    mean_scores = 1.0 - (mean_scores - smin) / (smax - smin)
-                else:
-                    mean_scores = -mean_scores
-                mean_scores = torch.nan_to_num(mean_scores, nan=0.0, posinf=0.0, neginf=0.0)
-                pyg_auc = eval_roc_auc(y_true, mean_scores)
-
             pyg_ap = eval_average_precision(y_true, mean_scores)
             pyg_rec = eval_recall_at_k(y_true, mean_scores, int(y_true.sum()))
             pyg_prec = eval_precision_at_k(y_true, mean_scores, int(y_true.sum()))
@@ -1352,22 +1379,14 @@ class ResFlowGAD(BaseTransform):
             if getattr(self, "use_score_smoothing", False) and edge_index.numel() > 0:
                 score = _smooth_scores_by_graph(score, edge_index, self.score_smoothing_alpha, score.device)
 
+            # === 基于结构锚点的无监督极性校准 (Structural Anchor / Local Feature Divergence) ===
+            score = _structural_anchor_polarity_calibration(score, x, edge_index)
+
             scores_cpu = score.detach().cpu()
             # 兜底：NaN/Inf 会破坏 sklearn 评估，替换为 0
             if torch.isnan(scores_cpu).any() or torch.isinf(scores_cpu).any():
                 scores_cpu = torch.nan_to_num(scores_cpu, nan=0.0, posinf=0.0, neginf=0.0)
             pyg_auc = eval_roc_auc(y, scores_cpu)
-            # AUC < 0.5 时方向反了，用 1-x 取反（先归一化到 [0,1] 再 1-x）
-            if _auc_flip_enabled() and pyg_auc < 0.5:
-                smin, smax = score.min(), score.max()
-                if smax - smin > 1e-8:
-                    score = 1.0 - (score - smin) / (smax - smin)
-                else:
-                    score = -score
-                scores_cpu = score.detach().cpu()
-                if torch.isnan(scores_cpu).any() or torch.isinf(scores_cpu).any():
-                    scores_cpu = torch.nan_to_num(scores_cpu, nan=0.0, posinf=0.0, neginf=0.0)
-                pyg_auc = eval_roc_auc(y, scores_cpu)
             pyg_ap = eval_average_precision(y, scores_cpu)
             pyg_rec = eval_recall_at_k(y, scores_cpu, sum(y))
             pyg_prec = eval_precision_at_k(y, scores_cpu, sum(y))

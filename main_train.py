@@ -11,7 +11,7 @@ from res_flow_gad import ResFlowGAD
 def get_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--config", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", "weibo.yaml"))
+    parser.add_argument("--config", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", "weibo_best.yaml"))
     parser.add_argument("--result-file", type=str, default=None, help="Optional: write metrics JSON to this file")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--num_trial", type=int, default=None, help="Number of trials (default from config or 3)")

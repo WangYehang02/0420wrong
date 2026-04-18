@@ -1,13 +1,18 @@
-# FMGAD 调参报告最优参数 (disney AUC 0.8140)
+# Disney · 稳健主配置 disney_best_fmgad_refined（多 seed 推荐）
 dataset: disney
-ae_dropout: 0.4
-ae_lr: 0.02
-ae_alpha: 0.6
-hid_dim:
-proto_alpha: 0.01
-weight: 1.5
-residual_scale: 20.0
-sample_steps: 50
-
+exp_tag: disney_best_refined_multiseed
+ae_alpha: 0.55
+ae_dropout: 0.35
+ae_lr: 0.025
+flow_t_sampling: logit_normal
+hid_dim: null
+proto_alpha: 0.005
+residual_scale: 10.0
+sample_steps: 75
+use_adaptive_residual_scale: false
+use_multi_scale_residual: false
+use_multi_score_fusion: false
+use_score_smoothing: true
 use_virtual_neighbors: false
-use_score_smoothing: false
+weight: 1.75
+num_trial: 1

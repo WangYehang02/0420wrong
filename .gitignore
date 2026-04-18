@@ -6,6 +6,7 @@ datasets/YelpChi/YelpChi_care_gnn/
 *.pt
 *.pth
 checkpoints/
+logs/
 
 # Python
 __pycache__/

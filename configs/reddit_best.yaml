@@ -1,13 +1,18 @@
-# FMGAD 调参报告最优参数 (reddit AUC 0.5683)
+# Reddit · manifest 均值第一 fae2d0e25f4c（主配置）
 dataset: reddit
+exp_tag: repro25_reddit_meanrank1_fae2d0e25f4c
+ae_alpha: 1.0
 ae_dropout: 0.3
-ae_lr: 0.02
-ae_alpha: 0.8
-hid_dim:
-proto_alpha: 0.001
-weight: 0.5
-residual_scale: 5.0
-sample_steps: 100
-
-use_virtual_neighbors: true
+ae_lr: 0.003
+flow_t_sampling: uniform
+hid_dim: null
+proto_alpha: 0.005
+residual_scale: 10.0
+sample_steps: 150
+use_adaptive_residual_scale: false
+use_multi_scale_residual: false
+use_multi_score_fusion: false
 use_score_smoothing: true
+use_virtual_neighbors: true
+weight: 0.0
+num_trial: 1

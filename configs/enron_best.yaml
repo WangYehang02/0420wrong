@@ -1,13 +1,18 @@
-# FMGAD 调参报告最优参数 (enron AUC 0.8071)
+# Enron · manifest 均值第一 95d43eb16a43（主配置）
 dataset: enron
-ae_dropout: 0.4
-ae_lr: 0.005
+exp_tag: repro25_enron_meanrank1_95d43eb16a43
 ae_alpha: 1.0
-hid_dim:
-proto_alpha: 0.05
-weight: 1.5
-residual_scale: 10.0
-sample_steps: 50
-
-use_virtual_neighbors: true
+ae_dropout: 0.2
+ae_lr: 0.003
+flow_t_sampling: uniform
+hid_dim: null
+proto_alpha: 0.01
+residual_scale: 20.0
+sample_steps: 100
+use_adaptive_residual_scale: false
+use_multi_scale_residual: false
+use_multi_score_fusion: false
 use_score_smoothing: true
+use_virtual_neighbors: true
+weight: 0.0
+num_trial: 1
