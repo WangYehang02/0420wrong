@@ -16,5 +16,13 @@ use_score_smoothing: true
 use_virtual_neighbors: true
 weight: 0.0
 num_trial: 1
-# 拓扑先验：稠密团伙型异常，重建分数与“异常=高分”约定相反时需翻转
-flip_score: true
+quantile_rank_polarity: false
+quantile_rank_low: 0.1
+quantile_rank_high: 0.9
+quantile_rank_threshold: 0.5
+kmeans_polarity: false
+polarity_hybrid: true
+kmeans_max_minority_ratio: 0.42
+flip_score: false
+lcc_spearman_polarity: true
+lcc_spearman_threshold: -0.05

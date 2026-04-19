@@ -73,6 +73,16 @@ def main():
         num_trial=args.num_trial if args.num_trial is not None else int(cfg.get("num_trial", 3)),
         exp_tag=cfg.get("exp_tag", None),
         flip_score=cfg.get("flip_score", False),
+        kmeans_polarity=cfg.get("kmeans_polarity", False),
+        kmeans_polarity_random_state=int(cfg.get("kmeans_polarity_random_state", args.seed)),
+        kmeans_max_minority_ratio=float(cfg.get("kmeans_max_minority_ratio", 0.42)),
+        polarity_hybrid=cfg.get("polarity_hybrid", True),
+        quantile_rank_polarity=cfg.get("quantile_rank_polarity", False),
+        quantile_rank_low=float(cfg.get("quantile_rank_low", 0.1)),
+        quantile_rank_high=float(cfg.get("quantile_rank_high", 0.9)),
+        quantile_rank_threshold=float(cfg.get("quantile_rank_threshold", 0.5)),
+        lcc_spearman_polarity=cfg.get("lcc_spearman_polarity", False),
+        lcc_spearman_threshold=float(cfg.get("lcc_spearman_threshold", -0.05)),
     )
 
     print("Running FMGADself on dataset:", dset, "num_trial:", model.num_trial, flush=True)

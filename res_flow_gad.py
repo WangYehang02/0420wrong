@@ -15,6 +15,7 @@ from torch_geometric.transforms import BaseTransform
 from torch_geometric.data import Data
 from torch_geometric.utils import to_dense_adj, from_scipy_sparse_matrix
 from sklearn.metrics import auc, precision_recall_curve
+from sklearn.cluster import KMeans
 from scipy import io as scipy_io
 from scipy.sparse import issparse
 from pygod.metric.metric import (
@@ -33,12 +34,130 @@ if FMGAD_ROOT not in sys.path:
     sys.path.insert(0, FMGAD_ROOT)
 
 from auto_encoder import GraphAE
-from utils import softmax_with_temperature
+from utils import softmax_with_temperature, compute_node_lcc_tensor, calibrate_polarity_lcc_spearman
 from load_custom_data import load_dgraphfin_data, load_dgraph_data
 from flow_matching_model import MLPFlowMatching, FlowMatchingModel, sample_flow_matching_free
 from FMloss import flow_matching_loss, conditional_flow_matching_loss
 
 from encoder import compute_dual_residuals_with_degree
+
+
+def _linear_score_flip01(score: torch.Tensor) -> torch.Tensor:
+    """将 score 线性压到 [0,1] 再取 1-x（与历史 flip_score 一致）。"""
+    smin, smax = score.min(), score.max()
+    if float(smax - smin) <= 1e-8:
+        return -score
+    return 1.0 - (score - smin) / (smax - smin)
+
+
+def _apply_quantile_rank_polarity(
+    score: torch.Tensor,
+    *,
+    quantile_low: float,
+    quantile_high: float,
+    rank_flip_threshold: float,
+    flip_score: bool,
+    polarity_hybrid: bool,
+) -> torch.Tensor:
+    """
+    分位数截尾 + 秩：在 [q_low, q_high] 分数带内取中位数 M，计算 p = mean(s < M)。
+    若 p > rank_flip_threshold，认为左侧质量过大（相对「主体」中位），对分数做线性翻转。
+    非弃权时仅由 p 决定；flip_score 只在弃权/退化分支与 polarity_hybrid 联用，不会与「未翻转」结果 OR。
+    """
+    with torch.no_grad():
+        s = score
+        if s.numel() < 2:
+            return _linear_score_flip01(s) if (polarity_hybrid and flip_score) else s
+        smin, smax = s.min(), s.max()
+        if float(smax - smin) <= 1e-8:
+            return _linear_score_flip01(s) if (polarity_hybrid and flip_score) else s
+        ql = min(quantile_low, quantile_high)
+        qh = max(quantile_low, quantile_high)
+        qs = torch.tensor([ql, qh], device=s.device, dtype=s.dtype)
+        qv = torch.quantile(s, qs)
+        q_lo, q_hi = qv[0], qv[1]
+        if float(q_hi - q_lo) <= 1e-8:
+            return _linear_score_flip01(s) if (polarity_hybrid and flip_score) else s
+        normal_mask = (s >= q_lo) & (s <= q_hi)
+        if int(normal_mask.sum()) == 0:
+            return _linear_score_flip01(s) if (polarity_hybrid and flip_score) else s
+        M = torch.median(s[normal_mask])
+        p = (s < M).float().mean()
+        if float(p) > rank_flip_threshold:
+            return _linear_score_flip01(s)
+        return s
+
+
+def _apply_polarity_calibration(
+    score: torch.Tensor,
+    *,
+    flip_score: bool,
+    kmeans_polarity: bool,
+    quantile_rank_polarity: bool,
+    quantile_rank_low: float,
+    quantile_rank_high: float,
+    quantile_rank_threshold: float,
+    kmeans_random_state: int,
+    kmeans_max_minority_ratio: float,
+    polarity_hybrid: bool,
+) -> torch.Tensor:
+    """
+    极性校准（全程不用标签）：
+    - quantile_rank_polarity 为 True 时优先：分位数截尾 + 全局秩（见 _apply_quantile_rank_polarity）。
+    - 否则 kmeans_polarity：K=2 聚类 + 弃权 + hybrid。
+    - 否则仅 flip_score：数据集先验线性翻转。
+    - polarity_hybrid：K-Means / 分位数路径弃权时若 flip_score=True 则回退先验翻转。
+    """
+    with torch.no_grad():
+        s = score
+        if quantile_rank_polarity:
+            return _apply_quantile_rank_polarity(
+                s,
+                quantile_low=quantile_rank_low,
+                quantile_high=quantile_rank_high,
+                rank_flip_threshold=quantile_rank_threshold,
+                flip_score=flip_score,
+                polarity_hybrid=polarity_hybrid,
+            )
+        if not kmeans_polarity and not flip_score:
+            return s
+        if not kmeans_polarity and flip_score:
+            return _linear_score_flip01(s)
+
+        # kmeans_polarity is True
+        if s.numel() < 2:
+            return _linear_score_flip01(s) if (polarity_hybrid and flip_score) else s
+        smin, smax = s.min(), s.max()
+        if float(smax - smin) <= 1e-8:
+            return _linear_score_flip01(s) if (polarity_hybrid and flip_score) else s
+
+        score_np = s.detach().cpu().numpy().reshape(-1, 1)
+        kmeans = KMeans(n_clusters=2, random_state=kmeans_random_state, n_init=10).fit(score_np)
+        labels = kmeans.labels_
+        count_0 = int((labels == 0).sum())
+        count_1 = int((labels == 1).sum())
+        n = float(count_0 + count_1)
+        minority_frac = min(count_0, count_1) / max(n, 1.0)
+
+        # 两簇差不多大时，「少数簇」不再是「少数异常」的可信代理 → 弃权
+        abstain = minority_frac > kmeans_max_minority_ratio
+        if abstain:
+            if polarity_hybrid and flip_score:
+                return _linear_score_flip01(s)
+            return s
+
+        minority_label = 0 if count_0 < count_1 else 1
+        majority_label = 1 - minority_label
+        mask_min = labels == minority_label
+        mask_maj = labels == majority_label
+        if mask_min.sum() == 0 or mask_maj.sum() == 0:
+            return _linear_score_flip01(s) if (polarity_hybrid and flip_score) else s
+
+        mean_minority = float(score_np[mask_min].mean())
+        mean_majority = float(score_np[mask_maj].mean())
+        if mean_minority < mean_majority:
+            return _linear_score_flip01(s)
+        return s
 
 
 def _smooth_scores_by_graph(
@@ -164,6 +283,16 @@ class ResFlowGAD(BaseTransform):
         num_trial: int = 3,
         exp_tag: Optional[str] = None,
         flip_score: bool = False,
+        kmeans_polarity: bool = False,
+        kmeans_polarity_random_state: int = 42,
+        kmeans_max_minority_ratio: float = 0.42,
+        polarity_hybrid: bool = True,
+        quantile_rank_polarity: bool = False,
+        quantile_rank_low: float = 0.1,
+        quantile_rank_high: float = 0.9,
+        quantile_rank_threshold: float = 0.5,
+        lcc_spearman_polarity: bool = False,
+        lcc_spearman_threshold: float = -0.05,
     ):
         self.name = name
         self.num_trial = num_trial
@@ -196,6 +325,17 @@ class ResFlowGAD(BaseTransform):
         self.ensemble_score = ensemble_score
         self.exp_tag = exp_tag
         self.flip_score = flip_score
+        self.kmeans_polarity = kmeans_polarity
+        self.kmeans_polarity_random_state = kmeans_polarity_random_state
+        self.kmeans_max_minority_ratio = kmeans_max_minority_ratio
+        self.polarity_hybrid = polarity_hybrid
+        self.quantile_rank_polarity = quantile_rank_polarity
+        self.quantile_rank_low = quantile_rank_low
+        self.quantile_rank_high = quantile_rank_high
+        self.quantile_rank_threshold = quantile_rank_threshold
+        self.lcc_spearman_polarity = lcc_spearman_polarity
+        self.lcc_spearman_threshold = lcc_spearman_threshold
+        self._node_lcc = None  # type: Optional[torch.Tensor]
 
         self.ae_dropout = ae_dropout
         self.ae_lr = ae_lr
@@ -653,6 +793,12 @@ class ResFlowGAD(BaseTransform):
     def forward(self, dset: str):
         self.dataset = dset
         data = self._load_dataset(dset)
+        self._node_lcc = None
+        if getattr(self, "lcc_spearman_polarity", False):
+            n_nodes = int(getattr(data, "num_nodes", data.x.size(0)))
+            if self.verbose:
+                print(f"Precomputing node LCC for {n_nodes} nodes (once)...", flush=True)
+            self._node_lcc = compute_node_lcc_tensor(data.edge_index, n_nodes)
         self._large_graph = getattr(data, "num_nodes", data.x.size(0)) > 15000
         if self.hid_dim is None:
             self.hid_dim = 2 ** int(math.log2(data.x.size(1)) - 1)
@@ -1340,13 +1486,27 @@ class ResFlowGAD(BaseTransform):
             if getattr(self, "use_score_smoothing", False) and edge_index.numel() > 0:
                 score = _smooth_scores_by_graph(score, edge_index, self.score_smoothing_alpha, score.device)
 
-            # === 基于数据集拓扑先验的极性校准（配置 flip_score，不依赖标签）===
-            if getattr(self, "flip_score", False):
-                smin, smax = score.min(), score.max()
-                if smax - smin > 1e-8:
-                    score = 1.0 - (score - smin) / (smax - smin)
-                else:
-                    score = -score
+            # === 极性：LCC-Spearman 探针优先；否则分位秩 / K-Means / flip（均不用 y）===
+            if getattr(self, "lcc_spearman_polarity", False) and getattr(self, "_node_lcc", None) is not None:
+                score, _ = calibrate_polarity_lcc_spearman(
+                    score,
+                    self._node_lcc.to(score.device),
+                    float(getattr(self, "lcc_spearman_threshold", -0.05)),
+                    False,
+                )
+            else:
+                score = _apply_polarity_calibration(
+                    score,
+                    flip_score=bool(getattr(self, "flip_score", False)),
+                    kmeans_polarity=bool(getattr(self, "kmeans_polarity", False)),
+                    quantile_rank_polarity=bool(getattr(self, "quantile_rank_polarity", False)),
+                    quantile_rank_low=float(getattr(self, "quantile_rank_low", 0.1)),
+                    quantile_rank_high=float(getattr(self, "quantile_rank_high", 0.9)),
+                    quantile_rank_threshold=float(getattr(self, "quantile_rank_threshold", 0.5)),
+                    kmeans_random_state=int(getattr(self, "kmeans_polarity_random_state", 42)),
+                    kmeans_max_minority_ratio=float(getattr(self, "kmeans_max_minority_ratio", 0.42)),
+                    polarity_hybrid=bool(getattr(self, "polarity_hybrid", True)),
+                )
 
             scores_cpu = score.detach().cpu()
             # 兜底：NaN/Inf 会破坏 sklearn 评估，替换为 0

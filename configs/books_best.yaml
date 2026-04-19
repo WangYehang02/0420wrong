@@ -16,4 +16,13 @@ use_score_smoothing: true
 use_virtual_neighbors: true
 weight: 1.0
 num_trial: 1
-flip_score: true
+quantile_rank_polarity: false
+quantile_rank_low: 0.1
+quantile_rank_high: 0.9
+quantile_rank_threshold: 0.5
+kmeans_polarity: false
+polarity_hybrid: true
+kmeans_max_minority_ratio: 0.42
+flip_score: false
+lcc_spearman_polarity: true
+lcc_spearman_threshold: -0.05

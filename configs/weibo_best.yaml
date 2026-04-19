@@ -16,4 +16,15 @@ use_score_smoothing: true
 use_virtual_neighbors: true
 weight: 0.0
 num_trial: 1
+# 极性：分位秩/K-means 会覆盖 flip_score（非弃权时）；要稳定对齐指标请用先验 flip
+quantile_rank_polarity: false
+quantile_rank_low: 0.1
+quantile_rank_high: 0.9
+quantile_rank_threshold: 0.5
+kmeans_polarity: false
+polarity_hybrid: true
+kmeans_max_minority_ratio: 0.42
 flip_score: false
+# 纯无监督：Score vs 局部聚类系数 Spearman，rho < 阈值则翻转（与其它极性互斥）
+lcc_spearman_polarity: true
+lcc_spearman_threshold: -0.05
