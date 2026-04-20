@@ -83,7 +83,7 @@ def _worker_one_dataset(args_tuple):
     for seed in seeds:
         r = _run_one_seed(dataset, config_path, gpu, seed, result_dir, num_trial)
         runs.append(r)
-    valid = [x for x in runs if "auc_mean" in x and x.get("auc_mean", 0) > 0]
+    valid = [x for x in runs if "auc_mean" in x]
     if not valid:
         err = runs[0].get("error", "No valid run") if runs else "No runs"
         return (dataset, runs, 0.0, 0.0, None, err)
@@ -152,7 +152,7 @@ def main():
         "",
         "生成时间: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "结果目录: " + str(output_dir),
-        "配置: 使用最佳配置，seeds=42,66,123,256,512，每数据集各跑 5 遍。",
+        "配置: 各数据集 `configs/{dataset}_best.yaml`，命令行传入的 seeds 各跑一遍。",
         "",
         "## 各数据集性能（mean±std / 最佳）",
         "",
@@ -164,7 +164,7 @@ def main():
         if err:
             lines.append("| {} | - | - | - ({}) |".format(dataset, err[:40]))
         else:
-            aucs = [x["auc_mean"] for x in runs if "auc_mean" in x and x.get("auc_mean", 0) > 0]
+            aucs = [x["auc_mean"] for x in runs if "auc_mean" in x]
             if len(aucs) >= 2:
                 auc_mean, auc_std = statistics.mean(aucs), statistics.stdev(aucs)
                 lines.append("| {} | {:.4f}±{:.4f} | {:.4f} | {} |".format(dataset, auc_mean, auc_std, best_auc, best_seed))

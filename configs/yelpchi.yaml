@@ -1,0 +1,27 @@
+# YelpChi 调参基座（与 tuning_search_space 的 fixed_overrides / detailed 网格合并）
+dataset: yelpchi
+exp_tag: yelpchi_tune_base
+hid_dim: null
+ae_dropout: 0.3
+ae_lr: 0.01
+ae_alpha: 0.85
+proto_alpha: 0.01
+residual_scale: 12.5
+sample_steps: 100
+use_score_smoothing: true
+score_smoothing_alpha: 0.3
+flow_t_sampling: logit_normal
+weight: 1.0
+use_virtual_neighbors: true
+virtual_degree_threshold: 5
+virtual_k: 5
+num_trial: 1
+quantile_rank_polarity: false
+kmeans_polarity: false
+polarity_hybrid: true
+flip_score: false
+lcc_spearman_polarity: false
+lcc_spearman_threshold: -0.05
+feature_anchor_polarity: true
+feature_anchor_k_percent: 0.05
+feature_anchor_min_delta: 0.01

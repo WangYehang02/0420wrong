@@ -34,7 +34,13 @@ if FMGAD_ROOT not in sys.path:
     sys.path.insert(0, FMGAD_ROOT)
 
 from auto_encoder import GraphAE
-from utils import softmax_with_temperature, compute_node_lcc_tensor, calibrate_polarity_lcc_spearman
+from utils import (
+    softmax_with_temperature,
+    compute_node_lcc_tensor,
+    calibrate_polarity_lcc_spearman,
+    calibrate_polarity_tail_lcc,
+    calibrate_polarity_feature_anchor,
+)
 from load_custom_data import load_dgraphfin_data, load_dgraph_data
 from flow_matching_model import MLPFlowMatching, FlowMatchingModel, sample_flow_matching_free
 from FMloss import flow_matching_loss, conditional_flow_matching_loss
@@ -293,6 +299,12 @@ class ResFlowGAD(BaseTransform):
         quantile_rank_threshold: float = 0.5,
         lcc_spearman_polarity: bool = False,
         lcc_spearman_threshold: float = -0.05,
+        lcc_polarity_mode: str = "spearman",
+        lcc_tail_k_percent: float = 0.05,
+        lcc_tail_margin: float = 1.2,
+        feature_anchor_polarity: bool = False,
+        feature_anchor_k_percent: float = 0.05,
+        feature_anchor_min_delta: float = 0.01,
     ):
         self.name = name
         self.num_trial = num_trial
@@ -335,7 +347,14 @@ class ResFlowGAD(BaseTransform):
         self.quantile_rank_threshold = quantile_rank_threshold
         self.lcc_spearman_polarity = lcc_spearman_polarity
         self.lcc_spearman_threshold = lcc_spearman_threshold
+        self.lcc_polarity_mode = str(lcc_polarity_mode).strip().lower()
+        self.lcc_tail_k_percent = float(lcc_tail_k_percent)
+        self.lcc_tail_margin = float(lcc_tail_margin)
+        self.feature_anchor_polarity = feature_anchor_polarity
+        self.feature_anchor_k_percent = float(feature_anchor_k_percent)
+        self.feature_anchor_min_delta = float(feature_anchor_min_delta)
         self._node_lcc = None  # type: Optional[torch.Tensor]
+        self._raw_x_polarity = None  # type: Optional[torch.Tensor]
 
         self.ae_dropout = ae_dropout
         self.ae_lr = ae_lr
@@ -357,6 +376,8 @@ class ResFlowGAD(BaseTransform):
             return load_dgraph_data()
         if dset == "yelpchi":
             return self._load_yelpchi()
+        if dset == "cora":
+            return self._load_cora()
         if dset in ("questions", "hetero_questions"):
             return self._load_heterophilous_questions()
         if dset == "elliptic":
@@ -451,6 +472,19 @@ class ResFlowGAD(BaseTransform):
             "Twitter dataset not found. Please download twitter.pt and place it in ~/.pygod/data/ "
             "or provide Twitter.mat in FMGAD/ or FMGAD/datasets/ directory."
         )
+
+    def _load_cora(self):
+        """Cora：torch_geometric Planetoid（首次自动下载）；将**最稀有类别**标为异常(1)，其余为正常(0)。"""
+        from torch_geometric.datasets import Planetoid
+
+        root = os.path.join(FMGAD_ROOT, "data", "planetoid")
+        ds = Planetoid(root=root, name="Cora")
+        data = ds[0].clone()
+        y = data.y.clone()
+        counts = torch.bincount(y)
+        rare_cls = int(torch.argmin(counts))
+        data.y = (y == rare_cls).long()
+        return data
 
     def _load_yelpchi(self):
         """Load YelpChi: 本地 .mat -> CARE-GNN 官方 zip -> pygod（已下线 yelpchi.pt）-> 本地 .pt -> PyG Yelp。"""
@@ -794,6 +828,9 @@ class ResFlowGAD(BaseTransform):
         self.dataset = dset
         data = self._load_dataset(dset)
         self._node_lcc = None
+        self._raw_x_polarity = None
+        if getattr(self, "feature_anchor_polarity", False):
+            self._raw_x_polarity = data.x.detach().cpu().float()
         if getattr(self, "lcc_spearman_polarity", False):
             n_nodes = int(getattr(data, "num_nodes", data.x.size(0)))
             if self.verbose:
@@ -1486,14 +1523,33 @@ class ResFlowGAD(BaseTransform):
             if getattr(self, "use_score_smoothing", False) and edge_index.numel() > 0:
                 score = _smooth_scores_by_graph(score, edge_index, self.score_smoothing_alpha, score.device)
 
-            # === 极性：LCC-Spearman 探针优先；否则分位秩 / K-Means / flip（均不用 y）===
-            if getattr(self, "lcc_spearman_polarity", False) and getattr(self, "_node_lcc", None) is not None:
-                score, _ = calibrate_polarity_lcc_spearman(
+            # === 极性：特征锚点（data.x）优先；否则 LCC；否则分位秩 / K-Means / flip（均不用 y）===
+            if getattr(self, "feature_anchor_polarity", False) and getattr(self, "_raw_x_polarity", None) is not None:
+                score, _ = calibrate_polarity_feature_anchor(
                     score,
-                    self._node_lcc.to(score.device),
-                    float(getattr(self, "lcc_spearman_threshold", -0.05)),
-                    False,
+                    self._raw_x_polarity.to(score.device),
+                    k_percent=float(getattr(self, "feature_anchor_k_percent", 0.05)),
+                    min_delta=float(getattr(self, "feature_anchor_min_delta", 0.01)),
+                    verbose=bool(getattr(self, "verbose", False)),
                 )
+            elif getattr(self, "lcc_spearman_polarity", False) and getattr(self, "_node_lcc", None) is not None:
+                lcc_t = self._node_lcc.to(score.device)
+                mode = getattr(self, "lcc_polarity_mode", "spearman")
+                if mode == "tail":
+                    score, _ = calibrate_polarity_tail_lcc(
+                        score,
+                        lcc_t,
+                        k_percent=float(getattr(self, "lcc_tail_k_percent", 0.05)),
+                        margin=float(getattr(self, "lcc_tail_margin", 1.2)),
+                        verbose=bool(getattr(self, "verbose", False)),
+                    )
+                else:
+                    score, _ = calibrate_polarity_lcc_spearman(
+                        score,
+                        lcc_t,
+                        float(getattr(self, "lcc_spearman_threshold", -0.05)),
+                        False,
+                    )
             else:
                 score = _apply_polarity_calibration(
                     score,

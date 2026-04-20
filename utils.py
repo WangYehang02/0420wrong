@@ -64,6 +64,94 @@ def calibrate_polarity_lcc_spearman(
         return score, False
 
 
+def calibrate_polarity_tail_lcc(
+    score: torch.Tensor,
+    lcc: torch.Tensor,
+    k_percent: float = 0.05,
+    margin: float = 1.2,
+    verbose: bool = False,
+) -> Tuple[torch.Tensor, bool]:
+    """
+    尾部 LCC 对比（无监督）：取分数最高 / 最低各约 k% 节点，比较两组的平均 LCC。
+    若低分尾平均 LCC 显著高于高分尾（× margin），认为「低分端稠密塌陷」、极性反了，对 score 做 [0,1] 线性翻转。
+    """
+    with torch.no_grad():
+        s = score.reshape(-1).float()
+        lc = lcc.reshape(-1).float().to(s.device)
+        n = int(s.numel())
+        if n < 2 or lc.numel() != n:
+            return score, False
+        smin, smax = s.min(), s.max()
+        if float(smax - smin) <= 1e-12:
+            return score, False
+
+        k = max(int(n * float(k_percent)), 1)
+        k = min(k, n // 2)  # 避免上下尾重叠过多
+        if k < 1:
+            return score, False
+
+        _, top_idx = torch.topk(s, k, largest=True)
+        _, bot_idx = torch.topk(s, k, largest=False)
+        mean_lcc_top = lc[top_idx].mean()
+        mean_lcc_bot = lc[bot_idx].mean()
+
+        if verbose:
+            print(
+                f"[Tail-LCC] top-{k_percent*100:.1f}% mean LCC={float(mean_lcc_top):.4f}, "
+                f"bot-{k_percent*100:.1f}% mean LCC={float(mean_lcc_bot):.4f} (margin={margin})",
+                flush=True,
+            )
+
+        if float(mean_lcc_bot) > float(mean_lcc_top) * float(margin):
+            if float(smax - smin) <= 1e-12:
+                return -score, True
+            return 1.0 - (score - smin) / (smax - smin), True
+        return score, False
+
+
+def calibrate_polarity_feature_anchor(
+    score: torch.Tensor,
+    raw_x: torch.Tensor,
+    k_percent: float = 0.05,
+    min_delta: float = 0.01,
+    verbose: bool = False,
+) -> Tuple[torch.Tensor, bool]:
+    """
+    无监督特征锚点：用全体节点特征按维 median 作为「正常原型」，对分数最高/最低各约 k% 节点，
+    计算其与原型的余弦相似度均值。若 sim_top - sim_bot > min_delta（高分尾更接近原型、低分尾更远），
+    认为极性反了（正常被打出高分），对 score 做 [0,1] 线性翻转。仅使用 data.x，不用 GNN 嵌入。
+    """
+    with torch.no_grad():
+        s = score.reshape(-1).float()
+        x = raw_x.float()
+        if x.dim() != 2 or int(x.size(0)) != int(s.numel()):
+            return score, False
+        smin, smax = s.min(), s.max()
+        if float(smax - smin) <= 1e-12:
+            return score, False
+        n = int(s.numel())
+        k = max(int(n * float(k_percent)), 1)
+        k = min(k, n // 2)
+        if k < 1:
+            return score, False
+        proto = torch.median(x, dim=0).values.unsqueeze(0)
+        _, top_idx = torch.topk(s, k, largest=True)
+        _, bot_idx = torch.topk(s, k, largest=False)
+        sim_top = F.cosine_similarity(x[top_idx], proto, dim=1, eps=1e-8).mean()
+        sim_bot = F.cosine_similarity(x[bot_idx], proto, dim=1, eps=1e-8).mean()
+        delta = float(sim_top - sim_bot)
+        if verbose:
+            print(
+                f"[Feature-Anchor] sim_top={float(sim_top):.4f} sim_bot={float(sim_bot):.4f} delta={delta:.4f} (min_delta={min_delta})",
+                flush=True,
+            )
+        if delta > float(min_delta):
+            if float(smax - smin) <= 1e-12:
+                return -score, True
+            return 1.0 - (score - smin) / (smax - smin), True
+        return score, False
+
+
 def softmax_with_temperature(input, t=1, axis=-1):
     """
     带温度参数的 softmax 函数

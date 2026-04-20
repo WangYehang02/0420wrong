@@ -24,5 +24,11 @@ kmeans_polarity: false
 polarity_hybrid: true
 kmeans_max_minority_ratio: 0.42
 flip_score: false
-lcc_spearman_polarity: true
+lcc_spearman_polarity: false
+lcc_polarity_mode: tail
+lcc_tail_k_percent: 0.05
+lcc_tail_margin: 1.2
 lcc_spearman_threshold: -0.05
+feature_anchor_polarity: true
+feature_anchor_k_percent: 0.05
+feature_anchor_min_delta: 0.01

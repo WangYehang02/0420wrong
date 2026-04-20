@@ -83,6 +83,12 @@ def main():
         quantile_rank_threshold=float(cfg.get("quantile_rank_threshold", 0.5)),
         lcc_spearman_polarity=cfg.get("lcc_spearman_polarity", False),
         lcc_spearman_threshold=float(cfg.get("lcc_spearman_threshold", -0.05)),
+        lcc_polarity_mode=str(cfg.get("lcc_polarity_mode", "spearman")),
+        lcc_tail_k_percent=float(cfg.get("lcc_tail_k_percent", 0.05)),
+        lcc_tail_margin=float(cfg.get("lcc_tail_margin", 1.2)),
+        feature_anchor_polarity=cfg.get("feature_anchor_polarity", False),
+        feature_anchor_k_percent=float(cfg.get("feature_anchor_k_percent", 0.05)),
+        feature_anchor_min_delta=float(cfg.get("feature_anchor_min_delta", 0.01)),
     )
 
     print("Running FMGADself on dataset:", dset, "num_trial:", model.num_trial, flush=True)

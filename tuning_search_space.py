@@ -184,4 +184,16 @@ def get_detailed_search_space(dataset: str) -> dict:
             "flow_t_sampling": ["uniform", "logit_normal"],
             "use_virtual_neighbors": [True, False],
         }
+    if d == "cora":
+        return {
+            "ae_dropout": [0.2, 0.3, 0.4],
+            "ae_lr": [0.005, 0.01, 0.02],
+            "ae_alpha": [0.8, 1.0],
+            "residual_scale": [10.0, 15.0, 20.0],
+            "sample_steps": [50, 75, 100],
+            "weight": [0.0, 0.5, 1.0, 1.5],
+            "proto_alpha": [0.001, 0.005, 0.01],
+            "flow_t_sampling": ["uniform", "logit_normal"],
+            "use_virtual_neighbors": [True, False],
+        }
     return get_refined_search_space(dataset)
