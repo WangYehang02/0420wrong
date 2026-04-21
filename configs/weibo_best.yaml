@@ -25,12 +25,24 @@ kmeans_polarity: false
 polarity_hybrid: true
 kmeans_max_minority_ratio: 0.42
 flip_score: false
-# 纯无监督：特征锚点（data.x median 原型 + 尾部分余弦）；LCC 探针关闭以免冲突
+# 无监督极性：完整 Baseline SmoothGNN(NAD) 参考分数 → Spearman 定方向（关闭轻量 smoothgnn_polarity）
+smoothgnn_full_polarity: true
+smoothgnn_full_nepoch: 100
+smoothgnn_full_spearman_threshold: -0.05
+smoothgnn_polarity: false
+smoothgnn_anchor_k_percent: 0.05
+smoothgnn_anchor_margin: 1.05
+smoothgnn_robust_spearman_threshold: -0.1
+smoothgnn_eps: 0.004
+smooth_discrepancy_polarity: false
+smooth_discrepancy_mode: spearman
+smooth_discrepancy_spearman_threshold: -0.05
+smooth_discrepancy_representation: embedding
+smooth_discrepancy_k_percent: 0.05
+smooth_discrepancy_tail_margin: 1.0
 lcc_spearman_polarity: false
 lcc_polarity_mode: tail
 lcc_tail_k_percent: 0.05
 lcc_tail_margin: 1.2
 lcc_spearman_threshold: -0.05
-feature_anchor_polarity: true
-feature_anchor_k_percent: 0.05
-feature_anchor_min_delta: 0.01
+iforest_anchor_polarity: false

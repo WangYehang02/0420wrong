@@ -1,5 +1,20 @@
 import os
 import sys
+
+
+def _cuda_visible_devices_from_argv_early() -> None:
+    """在 import torch 之前锁定可见 GPU，避免多进程并行时全部先初始化到物理 GPU 0。"""
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        return
+    argv = sys.argv
+    for i in range(len(argv) - 1):
+        if argv[i] == "--device":
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(argv[i + 1])
+            return
+
+
+_cuda_visible_devices_from_argv_early()
+
 import time
 import yaml
 import argparse
@@ -39,7 +54,8 @@ def main():
 
     cfg = yaml.load(open(args.config, "r"), Loader=yaml.Loader)
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.device)
+    if "CUDA_VISIBLE_DEVICES" not in os.environ:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.device)
     dset = cfg["dataset"]
 
     # 和 v3 一样：如果配置里给了 ae_alpha=0.0，自动回退到一个安全值，避免 NaN
@@ -86,9 +102,28 @@ def main():
         lcc_polarity_mode=str(cfg.get("lcc_polarity_mode", "spearman")),
         lcc_tail_k_percent=float(cfg.get("lcc_tail_k_percent", 0.05)),
         lcc_tail_margin=float(cfg.get("lcc_tail_margin", 1.2)),
-        feature_anchor_polarity=cfg.get("feature_anchor_polarity", False),
-        feature_anchor_k_percent=float(cfg.get("feature_anchor_k_percent", 0.05)),
-        feature_anchor_min_delta=float(cfg.get("feature_anchor_min_delta", 0.01)),
+        iforest_anchor_polarity=cfg.get("iforest_anchor_polarity", False),
+        iforest_n_estimators=int(cfg.get("iforest_n_estimators", 100)),
+        iforest_anchor_random_state=int(cfg.get("iforest_anchor_random_state", args.seed)),
+        smooth_discrepancy_polarity=cfg.get("smooth_discrepancy_polarity", False),
+        smooth_discrepancy_mode=str(cfg.get("smooth_discrepancy_mode", "spearman")),
+        smooth_discrepancy_spearman_threshold=float(cfg.get("smooth_discrepancy_spearman_threshold", -0.05)),
+        smooth_discrepancy_k_percent=float(cfg.get("smooth_discrepancy_k_percent", 0.05)),
+        smooth_discrepancy_tail_margin=float(cfg.get("smooth_discrepancy_tail_margin", 1.0)),
+        smooth_discrepancy_representation=str(cfg.get("smooth_discrepancy_representation", "embedding")),
+        smoothgnn_polarity=cfg.get("smoothgnn_polarity", False),
+        smoothgnn_anchor_k_percent=float(cfg.get("smoothgnn_anchor_k_percent", 0.05)),
+        smoothgnn_anchor_margin=float(cfg.get("smoothgnn_anchor_margin", 1.05)),
+        smoothgnn_robust_spearman_threshold=float(cfg.get("smoothgnn_robust_spearman_threshold", -0.1)),
+        smoothgnn_eps=float(cfg.get("smoothgnn_eps", 4e-3)),
+        smoothgnn_full_polarity=cfg.get("smoothgnn_full_polarity", False),
+        smoothgnn_full_nepoch=int(cfg.get("smoothgnn_full_nepoch", 100)),
+        smoothgnn_full_hidden_dim=int(cfg.get("smoothgnn_full_hidden_dim", 64)),
+        smoothgnn_full_spearman_threshold=float(cfg.get("smoothgnn_full_spearman_threshold", -0.05)),
+        smoothgnn_full_seed=int(cfg.get("smoothgnn_full_seed", args.seed)),
+        smoothgnn_teacher_polarity=cfg.get("smoothgnn_teacher_polarity", False),
+        smoothgnn_teacher_dir=cfg.get("smoothgnn_teacher_dir", None),
+        smoothgnn_teacher_spearman_threshold=float(cfg.get("smoothgnn_teacher_spearman_threshold", -0.1)),
     )
 
     print("Running FMGADself on dataset:", dset, "num_trial:", model.num_trial, flush=True)

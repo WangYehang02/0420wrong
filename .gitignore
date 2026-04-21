@@ -8,6 +8,7 @@ datasets/YelpChi/YelpChi_care_gnn/
 checkpoints/
 logs/
 reports_*/
+runs/
 
 # Python
 __pycache__/

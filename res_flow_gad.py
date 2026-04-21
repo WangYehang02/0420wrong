@@ -39,7 +39,10 @@ from utils import (
     compute_node_lcc_tensor,
     calibrate_polarity_lcc_spearman,
     calibrate_polarity_tail_lcc,
-    calibrate_polarity_feature_anchor,
+    calibrate_polarity_smooth_discrepancy,
+    compute_smoothgnn_local_prior,
+    calibrate_polarity_robust,
+    calibrate_polarity_spearman_reference,
 )
 from load_custom_data import load_dgraphfin_data, load_dgraph_data
 from flow_matching_model import MLPFlowMatching, FlowMatchingModel, sample_flow_matching_free
@@ -302,9 +305,36 @@ class ResFlowGAD(BaseTransform):
         lcc_polarity_mode: str = "spearman",
         lcc_tail_k_percent: float = 0.05,
         lcc_tail_margin: float = 1.2,
-        feature_anchor_polarity: bool = False,
-        feature_anchor_k_percent: float = 0.05,
-        feature_anchor_min_delta: float = 0.01,
+        # 无监督极性：Isolation Forest 特征锚点（与 FMGAD 分数 Spearman，rho<0 则翻转）
+        iforest_anchor_polarity: bool = False,
+        iforest_n_estimators: int = 100,
+        iforest_anchor_random_state: int = 42,
+        # 无监督极性：SmoothGNN 风格的局部-全局特征差异（training-free）
+        smooth_discrepancy_polarity: bool = False,
+        smooth_discrepancy_mode: str = "spearman",
+        smooth_discrepancy_spearman_threshold: float = -0.05,
+        smooth_discrepancy_k_percent: float = 0.05,
+        smooth_discrepancy_tail_margin: float = 1.0,
+        # raw: 与最初手写版一致；embedding: AE 编码空间（更接近 SmoothGNN「表示」语义）
+        smooth_discrepancy_representation: str = "embedding",
+        # 局部平滑先验 + 稳健极性（Spearman 秩相关 + 尾部分组中位数），无偏度/无尾均值
+        smoothgnn_polarity: bool = False,
+        smoothgnn_anchor_k_percent: float = 0.05,
+        # 尾部分组中位数对比：bot 相对 top 的先验中位数倍数，>1 更保守
+        smoothgnn_anchor_margin: float = 1.05,
+        # Spearman(score, local_prior) 低于此阈值则判定极性反了（默认 -0.1）
+        smoothgnn_robust_spearman_threshold: float = -0.1,
+        smoothgnn_eps: float = 4e-3,
+        # 完整 Baseline SmoothGNN（NAD）训练得到的参考分数，仅用于 Spearman 极性校准（需 dgl + SmoothGNN 源码路径）
+        smoothgnn_full_polarity: bool = False,
+        smoothgnn_full_nepoch: int = 100,
+        smoothgnn_full_hidden_dim: int = 64,
+        smoothgnn_full_spearman_threshold: float = -0.05,
+        smoothgnn_full_seed: int = 42,
+        # 离线导师：预先用 generate_teacher_scores.py 生成 teacher_scores/{dataset}_smoothgnn_teacher.pt，推理时零训练开销
+        smoothgnn_teacher_polarity: bool = False,
+        smoothgnn_teacher_dir: Optional[str] = None,
+        smoothgnn_teacher_spearman_threshold: float = -0.1,
     ):
         self.name = name
         self.num_trial = num_trial
@@ -350,11 +380,31 @@ class ResFlowGAD(BaseTransform):
         self.lcc_polarity_mode = str(lcc_polarity_mode).strip().lower()
         self.lcc_tail_k_percent = float(lcc_tail_k_percent)
         self.lcc_tail_margin = float(lcc_tail_margin)
-        self.feature_anchor_polarity = feature_anchor_polarity
-        self.feature_anchor_k_percent = float(feature_anchor_k_percent)
-        self.feature_anchor_min_delta = float(feature_anchor_min_delta)
+        self.iforest_anchor_polarity = bool(iforest_anchor_polarity)
+        self.iforest_n_estimators = int(iforest_n_estimators)
+        self.iforest_anchor_random_state = int(iforest_anchor_random_state)
+        self.smooth_discrepancy_polarity = bool(smooth_discrepancy_polarity)
+        self.smooth_discrepancy_mode = str(smooth_discrepancy_mode).strip().lower()
+        self.smooth_discrepancy_spearman_threshold = float(smooth_discrepancy_spearman_threshold)
+        self.smooth_discrepancy_k_percent = float(smooth_discrepancy_k_percent)
+        self.smooth_discrepancy_tail_margin = float(smooth_discrepancy_tail_margin)
+        self.smooth_discrepancy_representation = str(smooth_discrepancy_representation).strip().lower()
+        self.smoothgnn_polarity = bool(smoothgnn_polarity)
+        self.smoothgnn_anchor_k_percent = float(smoothgnn_anchor_k_percent)
+        self.smoothgnn_anchor_margin = float(smoothgnn_anchor_margin)
+        self.smoothgnn_robust_spearman_threshold = float(smoothgnn_robust_spearman_threshold)
+        self.smoothgnn_eps = float(smoothgnn_eps)
+        self.smoothgnn_full_polarity = bool(smoothgnn_full_polarity)
+        self.smoothgnn_full_nepoch = int(smoothgnn_full_nepoch)
+        self.smoothgnn_full_hidden_dim = int(smoothgnn_full_hidden_dim)
+        self.smoothgnn_full_spearman_threshold = float(smoothgnn_full_spearman_threshold)
+        self.smoothgnn_full_seed = int(smoothgnn_full_seed)
+        self.smoothgnn_teacher_polarity = bool(smoothgnn_teacher_polarity)
+        self.smoothgnn_teacher_dir = smoothgnn_teacher_dir
+        self.smoothgnn_teacher_spearman_threshold = float(smoothgnn_teacher_spearman_threshold)
         self._node_lcc = None  # type: Optional[torch.Tensor]
-        self._raw_x_polarity = None  # type: Optional[torch.Tensor]
+        self._smoothgnn_prior = None  # type: Optional[torch.Tensor]
+        self._smoothgnn_full_ref = None  # type: Optional[torch.Tensor]
 
         self.ae_dropout = ae_dropout
         self.ae_lr = ae_lr
@@ -828,14 +878,46 @@ class ResFlowGAD(BaseTransform):
         self.dataset = dset
         data = self._load_dataset(dset)
         self._node_lcc = None
-        self._raw_x_polarity = None
-        if getattr(self, "feature_anchor_polarity", False):
-            self._raw_x_polarity = data.x.detach().cpu().float()
         if getattr(self, "lcc_spearman_polarity", False):
             n_nodes = int(getattr(data, "num_nodes", data.x.size(0)))
             if self.verbose:
                 print(f"Precomputing node LCC for {n_nodes} nodes (once)...", flush=True)
             self._node_lcc = compute_node_lcc_tensor(data.edge_index, n_nodes)
+        self._smoothgnn_prior = None
+        self._smoothgnn_full_ref = None
+        self._smoothgnn_teacher = None  # type: Optional[torch.Tensor]
+        if getattr(self, "smoothgnn_teacher_polarity", False):
+            tdir = getattr(self, "smoothgnn_teacher_dir", None) or os.path.join(FMGAD_ROOT, "teacher_scores")
+            tpath = os.path.join(tdir, f"{dset}_smoothgnn_teacher.pt")
+            if os.path.isfile(tpath):
+                try:
+                    self._smoothgnn_teacher = torch.load(tpath, map_location="cpu", weights_only=False)
+                except TypeError:
+                    self._smoothgnn_teacher = torch.load(tpath, map_location="cpu")
+                self._smoothgnn_teacher = self._smoothgnn_teacher.float().reshape(-1)
+                if self.verbose:
+                    print(f"Loaded offline SmoothGNN teacher scores: {tpath} (N={self._smoothgnn_teacher.numel()})", flush=True)
+            elif self.verbose:
+                print(f"[Teacher] file not found ({tpath}), will fall back to full/local SmoothGNN if enabled.", flush=True)
+        if getattr(self, "smoothgnn_full_polarity", False) and self._smoothgnn_teacher is None:
+            from smoothgnn_full_reference import run_smoothgnn_nad_scores
+
+            if self.verbose:
+                print(
+                    "Training full SmoothGNN (Baseline NAD) for polarity reference (this may take several minutes)...",
+                    flush=True,
+                )
+            self._smoothgnn_full_ref = run_smoothgnn_nad_scores(
+                dset,
+                seed=int(getattr(self, "smoothgnn_full_seed", 42)),
+                nepoch=int(getattr(self, "smoothgnn_full_nepoch", 100)),
+                hidden_dim=int(getattr(self, "smoothgnn_full_hidden_dim", 64)),
+                verbose=bool(getattr(self, "verbose", False)),
+            )
+        elif getattr(self, "smoothgnn_polarity", False) and self._smoothgnn_teacher is None and self._smoothgnn_full_ref is None:
+            if self.verbose:
+                print("Precomputing local smoothness prior (||x - mean(neighbors)||, robust probe)...", flush=True)
+            self._smoothgnn_prior = compute_smoothgnn_local_prior(data.x.cpu(), data.edge_index.cpu())
         self._large_graph = getattr(data, "num_nodes", data.x.size(0)) > 15000
         if self.hid_dim is None:
             self.hid_dim = 2 ** int(math.log2(data.x.size(1)) - 1)
@@ -849,6 +931,9 @@ class ResFlowGAD(BaseTransform):
         )
         # 并发运行时避免多个进程写入同一 checkpoint 文件
         run_tag = self.exp_tag if self.exp_tag else f"run_{os.getpid()}_{int(time.time() * 1000)}"
+        _tag_suffix = os.environ.get("FMGAD_RUN_TAG_SUFFIX", "").strip()
+        if _tag_suffix:
+            run_tag = f"{run_tag}_{_tag_suffix}"
         ae_path = os.path.join(ae_path, run_tag)
         os.makedirs(ae_path, exist_ok=True)
 
@@ -1482,6 +1567,15 @@ class ResFlowGAD(BaseTransform):
         edge_index = data.edge_index.cuda()
         y = data.y.bool()
 
+        z_for_smooth = x
+        if getattr(self, "smooth_discrepancy_polarity", False):
+            rep = getattr(self, "smooth_discrepancy_representation", "embedding")
+            if str(rep).strip().lower() == "embedding":
+                with torch.no_grad():
+                    z_for_smooth = self.ae.encode(x, edge_index)
+            else:
+                z_for_smooth = x
+
         # 噪声维度与训练时 z 一致
         z0, _, _ = self._build_z(x, edge_index)
         z0 = self._normalize_clip(z0)
@@ -1523,13 +1617,49 @@ class ResFlowGAD(BaseTransform):
             if getattr(self, "use_score_smoothing", False) and edge_index.numel() > 0:
                 score = _smooth_scores_by_graph(score, edge_index, self.score_smoothing_alpha, score.device)
 
-            # === 极性：特征锚点（data.x）优先；否则 LCC；否则分位秩 / K-Means / flip（均不用 y）===
-            if getattr(self, "feature_anchor_polarity", False) and getattr(self, "_raw_x_polarity", None) is not None:
-                score, _ = calibrate_polarity_feature_anchor(
+            # === 极性：离线 SmoothGNN 导师 .pt > 内联完整 NAD > 稳健局部探针 > Smooth 嵌入 > iForest > LCC > ...
+            if getattr(self, "smoothgnn_teacher_polarity", False) and getattr(self, "_smoothgnn_teacher", None) is not None:
+                score, _ = calibrate_polarity_spearman_reference(
                     score,
-                    self._raw_x_polarity.to(score.device),
-                    k_percent=float(getattr(self, "feature_anchor_k_percent", 0.05)),
-                    min_delta=float(getattr(self, "feature_anchor_min_delta", 0.01)),
+                    self._smoothgnn_teacher.to(score.device),
+                    float(getattr(self, "smoothgnn_teacher_spearman_threshold", -0.1)),
+                    bool(getattr(self, "verbose", False)),
+                )
+            elif getattr(self, "smoothgnn_full_polarity", False) and getattr(self, "_smoothgnn_full_ref", None) is not None:
+                score, _ = calibrate_polarity_spearman_reference(
+                    score,
+                    self._smoothgnn_full_ref.to(score.device),
+                    float(getattr(self, "smoothgnn_full_spearman_threshold", -0.05)),
+                    bool(getattr(self, "verbose", False)),
+                )
+            elif getattr(self, "smoothgnn_polarity", False) and getattr(self, "_smoothgnn_prior", None) is not None:
+                score, _ = calibrate_polarity_robust(
+                    score,
+                    self._smoothgnn_prior.to(score.device),
+                    k_percent=float(getattr(self, "smoothgnn_anchor_k_percent", 0.05)),
+                    margin=float(getattr(self, "smoothgnn_anchor_margin", 1.05)),
+                    spearman_threshold=float(getattr(self, "smoothgnn_robust_spearman_threshold", -0.1)),
+                    verbose=bool(getattr(self, "verbose", False)),
+                )
+            elif getattr(self, "smooth_discrepancy_polarity", False):
+                score, _ = calibrate_polarity_smooth_discrepancy(
+                    score,
+                    z_for_smooth,
+                    edge_index,
+                    mode=str(getattr(self, "smooth_discrepancy_mode", "spearman")),
+                    spearman_threshold=float(getattr(self, "smooth_discrepancy_spearman_threshold", -0.05)),
+                    k_percent=float(getattr(self, "smooth_discrepancy_k_percent", 0.05)),
+                    tail_margin=float(getattr(self, "smooth_discrepancy_tail_margin", 1.0)),
+                    verbose=bool(getattr(self, "verbose", False)),
+                )
+            elif getattr(self, "iforest_anchor_polarity", False):
+                from auto_correct_polarity import correct_scores_iforest_anchor
+
+                score, _rho, _flipped = correct_scores_iforest_anchor(
+                    score,
+                    x,
+                    n_estimators=int(getattr(self, "iforest_n_estimators", 100)),
+                    random_state=int(getattr(self, "iforest_anchor_random_state", 42)),
                     verbose=bool(getattr(self, "verbose", False)),
                 )
             elif getattr(self, "lcc_spearman_polarity", False) and getattr(self, "_node_lcc", None) is not None:
